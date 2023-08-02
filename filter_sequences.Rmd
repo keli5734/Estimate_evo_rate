@@ -1,0 +1,165 @@
+---
+title: "Filter_sequence"
+output: pdf_document
+date: '2023-08-02'
+---
+ 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+ 
+
+```{r load packages, warning = FALSE}
+library(readxl)
+library(ggplot2)
+library(tidyverse)
+library(viridis)  
+library(dplyr)
+library(zoo)
+library(adephylo)
+library(ape)
+library(lubridate)  
+library(mgcv)
+library(pspline.inference)
+```
+
+
+
+
+```{r raw metadata}
+dataset <- vroom::vroom("meta_data.tsv")
+states <- unique(dataset$division_exposure)
+
+end.of.epiweek <- function(x, end = 6) {
+  offset <- (end - 4) %% 7
+  num.x <- as.numeric(x)
+  return(x - (num.x %% 7) + offset + ifelse(num.x %% 7 > offset, 7, 0))
+}
+
+metadata <- dataset %>% 
+  ## Dummy date variable
+  mutate(copy_date = as.numeric(date)) %>% 
+  ## Choosen lineages to be analyzed
+  mutate(voc_cdc = case_when(grepl(x = pango_lineage, 
+                                   pattern = '^(?=.*B.1.1.7)|(?=.*^Q)' , 
+                                   perl = TRUE) ~ 'Alpha*',
+                             grepl(x = pango_lineage, 
+                                   pattern = '^(?=.*B.1.351)', 
+                                   perl = TRUE) ~ 'Beta*',
+                             grepl(x = pango_lineage, 
+                                   pattern = '^(?=.*^P.1)', 
+                                   perl = TRUE) ~ 'Gamma*',
+                             grepl(x = pango_lineage, 
+                                   pattern = '^(?=.*B.1.617.2)', 
+                                   perl = TRUE) ~ 'Alpha*',
+                             grepl(x = pango_lineage, 
+                                   pattern = '^(?=.*BA.1)|(?=.*B.1.1.529)', 
+                                   perl = TRUE) ~ 'Omicron BA.1*',
+                             grepl(x = pango_lineage, 
+                                   pattern = '^(?=.*BA.2.75)', 
+                                   perl = TRUE) ~ 'Omicron BA.2.75*',
+                             grepl(x = pango_lineage, 
+                                   pattern = '^(?=.*BA.2)(?!.*BA.2.75)', 
+                                   perl = TRUE) ~ 'Omicron BA.2*',
+                             grepl(x = pango_lineage, 
+                                   pattern = '^(?=.*BA.3)', 
+                                   perl = TRUE) ~ 'Omicron BA.3*',
+                             grepl(x = pango_lineage, 
+                                   pattern = '^(?=.*BA.4)', 
+                                   perl = TRUE) ~ 'Omicron BA.4*',
+                             grepl(x = pango_lineage, 
+                                   pattern = '^(?=.*BA.5)', 
+                                   perl = TRUE) ~ 'Omicron BA.5*',
+                             grepl(x = pango_lineage, 
+                                   pattern = '^(?=.*XBB.1.5)', 
+                                   perl = TRUE) ~ 'XBB.1.5*',
+                             grepl(x = pango_lineage, 
+                                   pattern = '^(?=.*XBB.1)(?!.*XBB.1.5)', 
+                                   perl = TRUE) ~ 'XBB.1*',
+                             grepl(x = pango_lineage, 
+                                   pattern = '^(?=.*X)(?!.*XBB.1.5)(?!.*XBB.1)', 
+                                   perl = TRUE) ~ 'Recombinant',
+                             TRUE ~ 'Other')) %>% 
+  ## Completing dates to avoid missing dates
+  complete(date, nesting(voc_cdc), fill = list(copy_date = 0)) 
+  ## Putting date at the ending date of the epiweek
+  ## mutate(epiweek = end.of.e iweek(date))
+
+ 
+```
+
+
+
+
+ 
+```{r, warning = FALSE}
+# upload data for all vocs in all states in the US 
+
+dataset <- vroom::vroom("metadata_us.csv")
+
+data_voc <- dataset %>% 
+  filter(!is.na(division))  %>% 
+  ## dummy date column
+  mutate(copy_date = as.numeric(epiweek)) %>%  
+  ## Grouping by epiweek, state and voc_cdc
+  group_by(epiweek, division, voc_cdc, gisaid_epi_isl) %>% 
+  summarise_at(vars(copy_date), list(n = sum)) %>%  
+  mutate(freq = round(100*n/sum(n),2)) %>%  
+  rename(name_states = division)  %>% 
+  ungroup()
+  
+
+
+data_voc2 <- data_voc %>% 
+  group_by(epiweek, voc_cdc) %>% 
+  summarise(total_case = sum(n))  # use data_voc2 to identify the date for each variant of concern
+
+ 
+
+ggplot(data = data_voc2) + 
+  geom_line(aes( x = epiweek, y = total_case, color = voc_cdc), size = 2) + 
+  theme_bw() + 
+  facet_wrap(~voc_cdc, scales = "free") 
+#ggsave("linear_regression/cases.pdf", width = 25, height = 13, unit="in", dpi = 300)
+
+
+########### get ID ############
+
+
+data_alpha <- data_voc2 %>% filter(voc_cdc == "Omicron BA.5*")
+date <- unique(data_alpha$epiweek)
+seq.case <- c()
+for (i in 1:length(date)){
+  seq.case[i] <- n_distinct(subset(data_voc$gisaid_epi_isl, data_voc$epiweek == date[i] & data_voc$voc_cdc == "Omicron BA.5*"))
+}
+
+
+sel <- list()
+
+for(i in 1:length(date)){
+  if(n_distinct(subset(data_voc$gisaid_epi_isl, data_voc$epiweek == date[i] & data_voc$voc_cdc == "Omicron BA.5*")) <= 40 ){
+
+    sel[[i]] = subset(data_voc$gisaid_epi_isl, data_voc$epiweek == date[i] & data_voc$voc_cdc == "Omicron BA.5*")
+  }
+  
+  else{
+    sel[[i]] = sample(subset(data_voc$gisaid_epi_isl, data_voc$epiweek == date[i] & data_voc$voc_cdc == "Omicron BA.5*"), size =  40,  replace = FALSE)
+  }
+
+}
+
+vroom::vroom_write(x = as.data.frame(unlist(sel)), file = "VOC_fasta/ID_BA5.csv")
+
+
+
+
+############# filter out low coverage rate ############
+
+coverage_alpha <- vroom::vroom("coverage_BA5.csv")
+coverage_alpha <- coverage_alpha %>% filter(coverage >= 0.95)
+coverage_alpha <- coverage_alpha %>% filter(str_extract(string = coverage_alpha$Nextclade_pango, pattern = "BA.5") == "BA.5")
+ID_alpha_refined <- as.data.frame(str_extract(string = coverage_alpha$seqName, pattern = "EPI_ISL_\\d+"))
+vroom::vroom_write(x = ID_alpha_refined, file = "VOC_fasta/ID_BA5_refined.csv")
+ 
+
+```
